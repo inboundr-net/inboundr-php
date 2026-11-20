@@ -27,7 +27,7 @@ use Psr\Http\Message\StreamFactoryInterface;
  */
 final class Inboundr
 {
-    public const VERSION = '0.1.0';
+    public const VERSION = '0.1.1';
     public const DEFAULT_BASE_URL = 'https://inboundr.net';
     public const API_KEY_ENV_VAR = 'INBOUNDR_API_KEY';
 

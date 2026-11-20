@@ -92,6 +92,37 @@ final class Webhook
     }
 
     /**
+     * Verify a delivery's body and its id signature, and return the event with
+     * a delivery id that is safe to deduplicate retries on.
+     *
+     * The body signature covers only the body, so a delivery id read straight
+     * from the headers could be changed by someone replaying a captured
+     * delivery. This also checks `x-inboundr-id-signature`, and that it names
+     * the same email as the body.
+     *
+     * @param string $payload The raw request body, exactly as received.
+     * @param HeadersLike $headers
+     * @throws SignatureException Respond with 400.
+     */
+    public static function verifyDelivery(
+        string $payload,
+        mixed $headers,
+        string $secret,
+        int $toleranceSeconds = self::DEFAULT_TOLERANCE_SECONDS,
+        ?int $now = null,
+    ): WebhookDelivery {
+        $event = self::verify($payload, $headers, $secret, $toleranceSeconds, $now);
+        $ids = self::verifyIds($headers, $secret, $toleranceSeconds, $now);
+        if ($ids->emailId !== $event['email']['id']) {
+            throw new SignatureException(
+                'invalid_signature',
+                'The id signature names a different email than the body.',
+            );
+        }
+        return new WebhookDelivery($event, $ids->deliveryId);
+    }
+
+    /**
      * Verify the id signature of a delivery whose body was dropped.
      *
      * It proves only that Inboundr sent a delivery naming this email, so the one
@@ -149,7 +180,15 @@ final class Webhook
     private static function headerGetter(mixed $headers): \Closure
     {
         if ($headers instanceof MessageInterface) {
-            return static fn (string $name): ?string => $headers->hasHeader($name) ? $headers->getHeaderLine($name) : null;
+            return static function (string $name) use ($headers): ?string {
+                $value = $headers->getHeaderLine($name);
+                return $value === '' ? null : $value;
+            };
+        }
+        // A whole Symfony/Laravel Request: its get() reads query and body
+        // input, not headers, so use its header bag instead.
+        if (is_object($headers) && isset($headers->headers) && is_object($headers->headers)) {
+            $headers = $headers->headers;
         }
         if (is_object($headers) && method_exists($headers, 'get')) {
             return static function (string $name) use ($headers): ?string {
@@ -157,8 +196,15 @@ final class Webhook
                 return is_scalar($value) && (string) $value !== '' ? (string) $value : null;
             };
         }
+        if ($headers === null || $headers === false) {
+            // getallheaders() returns false on some servers: no headers at all.
+            $headers = [];
+        }
         if (!is_array($headers)) {
-            throw new \InvalidArgumentException('Headers must be a PSR-7 message, an object with get(), or an array.');
+            throw new SignatureException(
+                'missing_header',
+                'Headers must be a PSR-7 message, a header bag with get(), or an array; got ' . get_debug_type($headers) . '.',
+            );
         }
         $lower = [];
         foreach ($headers as $key => $value) {

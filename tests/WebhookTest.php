@@ -257,4 +257,87 @@ final class WebhookTest extends TestCase
         $read = Webhook::readHeaders([Webhook::LEGACY_SIGNATURE_HEADER => 'sig', Webhook::LEGACY_DELIVERY_ID_HEADER => 'del_1', 'X-Inboundr-Email-Id' => 'em_1']);
         self::assertSame(['sig', 'del_1', 'em_1'], [$read->signature, $read->deliveryId, $read->emailId]);
     }
+
+    // --- verifyDelivery: a delivery id you can deduplicate on ------------------
+
+    public function testVerifyDeliveryReturnsTheEventAndASignedDeliveryId(): void
+    {
+        $body = self::body();
+        $delivery = Webhook::verifyDelivery($body, [Webhook::SIGNATURE_HEADER => self::sign($body)] + self::idHeaders(), self::SECRET, now: self::NOW);
+        self::assertSame(self::DELIVERY_ID, $delivery->deliveryId);
+        self::assertSame(self::EMAIL_ID, $delivery->event['email']['id']);
+    }
+
+    public function testAReplayWithANewDeliveryIdIsRejected(): void
+    {
+        // The attack: replay a captured delivery with a fresh delivery id so a
+        // dedupe check sees it as new. The body signature still passes; the id
+        // signature doesn't.
+        $body = self::body();
+        $headers = [Webhook::SIGNATURE_HEADER => self::sign($body)] + self::idHeaders();
+        $headers[Webhook::DELIVERY_ID_HEADER] = 'del_forged';
+        $this->rejects('invalid_signature', fn () => Webhook::verifyDelivery($body, $headers, self::SECRET, now: self::NOW));
+    }
+
+    public function testAReplayWithTheIdSignatureStrippedIsRejected(): void
+    {
+        $body = self::body();
+        $this->rejects('missing_header', fn () => Webhook::verifyDelivery($body, [Webhook::SIGNATURE_HEADER => self::sign($body)], self::SECRET, now: self::NOW));
+    }
+
+    public function testIdHeadersFromAnotherEmailAreRejected(): void
+    {
+        // A captured body paired with the (valid) id headers of a different delivery.
+        $body = self::body();
+        $other = [
+            Webhook::ID_SIGNATURE_HEADER => self::signIds(emailId: 'em_other'),
+            Webhook::DELIVERY_ID_HEADER => self::DELIVERY_ID,
+            Webhook::EMAIL_ID_HEADER => 'em_other',
+        ];
+        $this->rejects('invalid_signature', fn () => Webhook::verifyDelivery($body, [Webhook::SIGNATURE_HEADER => self::sign($body)] + $other, self::SECRET, now: self::NOW));
+    }
+
+    // --- header inputs ------------------------------------------------------------
+
+    public function testNoHeadersAtAllIsMissingHeaderNotACrash(): void
+    {
+        // getallheaders() returns false on some servers.
+        $this->rejects('missing_header', fn () => Webhook::verify(self::body(), false, self::SECRET, now: self::NOW));
+        $this->rejects('missing_header', fn () => Webhook::verify(self::body(), 42, self::SECRET, now: self::NOW));
+    }
+
+    public function testAWholeRequestObjectIsReadThroughItsHeaderBag(): void
+    {
+        $body = self::body();
+        $headers = new class (self::sign($body)) {
+            public function __construct(private readonly string $sig)
+            {
+            }
+
+            public function get(string $key): ?string
+            {
+                return strtolower($key) === 'x-inboundr-signature' ? $this->sig : null;
+            }
+        };
+        // Like a Symfony/Laravel Request: get() reads input, `headers` holds the headers.
+        $request = new class ($headers) {
+            public function __construct(public readonly object $headers)
+            {
+            }
+
+            public function get(string $key): string
+            {
+                return 'from the query string';
+            }
+        };
+        self::assertSame('email.received', Webhook::verify($body, $request, self::SECRET, now: self::NOW)['event']);
+    }
+
+    public function testAnEmptyCanonicalPsr7HeaderFallsBackToTheLegacyName(): void
+    {
+        $body = self::body();
+        $request = new ServerRequest('POST', '/inbound', ['X-Inboundr-Signature' => '', 'X-Inbound-Signature' => self::sign($body)], $body);
+        self::assertSame(self::EMAIL_ID, Webhook::verifyRequest($request, self::SECRET, now: self::NOW)['email']['id']);
+    }
 }
+

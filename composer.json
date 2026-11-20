@@ -26,6 +26,9 @@
         "phpunit/phpunit": "^11.5",
         "symfony/yaml": "^7.1"
     },
+    "conflict": {
+        "guzzlehttp/guzzle": "<7.0"
+    },
     "suggest": {
         "guzzlehttp/guzzle": "Used automatically, with a 30s timeout, when no PSR-18 client is passed."
     },

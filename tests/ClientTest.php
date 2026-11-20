@@ -227,4 +227,77 @@ final class ClientTest extends TestCase
         self::assertSame(12.5, $config['timeout']);
         self::assertFalse($config['allow_redirects']);
     }
+
+    // --- request bodies -------------------------------------------------------------
+
+    public function testAnEmptyBodyIsSentAsAnObject(): void
+    {
+        [$client, $mock] = MockClient::client(fn () => MockClient::json(['id' => 'ep_1']));
+        $client->endpoints->update('ep_1', []);
+        self::assertSame('{}', (string) $mock->requests[0]->getBody());
+    }
+
+    public function testEmptyHeadersAreSentAsAnObjectSoTheyCanBeCleared(): void
+    {
+        [$client, $mock] = MockClient::client(fn () => MockClient::json(['id' => 'ep_1']));
+        $client->endpoints->update('ep_1', ['headers' => []]);
+        $client->endpoints->create(['name' => 'n', 'url' => 'https://x.dev', 'headers' => []]);
+        self::assertSame('{"headers":{}}', (string) $mock->requests[0]->getBody());
+        self::assertSame('{"name":"n","url":"https://x.dev","headers":{}}', (string) $mock->requests[1]->getBody());
+        // Lists stay lists.
+        $client->domains->update('dom_1', ['catchAllEndpointIds' => []]);
+        self::assertSame('{"catchAllEndpointIds":[]}', (string) $mock->requests[2]->getBody());
+    }
+
+    public function testABodyThatIsNotValidJsonRaisesInboundrException(): void
+    {
+        [$client] = MockClient::client(fn () => MockClient::json([]));
+        $this->expectException(InboundrException::class);
+        $this->expectExceptionMessage("can't be encoded as JSON");
+        $client->emails->send(['from' => 'a@x.dev', 'to' => ['b@x.dev'], 'subject' => 's', 'text' => "caf\xe9"]);
+    }
+
+    // --- odd responses --------------------------------------------------------------
+
+    public function testARepeatedCursorStopsInsteadOfLooping(): void
+    {
+        [$client, $mock] = MockClient::client(fn () => MockClient::json(['data' => [['id' => 'a']], 'nextCursor' => 'same']));
+        try {
+            iterator_to_array($client->emails->listAll());
+            self::fail('expected InboundrException');
+        } catch (InboundrException $e) {
+            self::assertStringContainsString('same cursor twice', $e->getMessage());
+        }
+        self::assertCount(2, $mock->requests);
+    }
+
+    public function testAHugeNonJsonErrorIsTruncatedInTheMessageButKeptInTheBody(): void
+    {
+        $page = '<html>' . str_repeat('x', 50_000) . '</html>';
+        [$client] = MockClient::client(fn () => new Response(502, [], $page));
+        try {
+            $client->domains->list();
+            self::fail('expected ApiException');
+        } catch (ApiException $e) {
+            self::assertLessThan(300, strlen($e->getMessage()));
+            self::assertSame($page, $e->body);
+        }
+    }
+
+    public function testABaseUrlEndingInApiV1IsNotDoubled(): void
+    {
+        foreach (['https://example.test/api/v1', 'https://example.test/api/v1/', 'https://example.test'] as $base) {
+            [$client, $mock] = MockClient::client(fn () => MockClient::json(['data' => []]), $base);
+            $client->domains->list();
+            self::assertSame('https://example.test/api/v1/domains', (string) $mock->requests[0]->getUri(), $base);
+        }
+    }
+
+    public function testComposerRefusesGuzzle6(): void
+    {
+        $composer = json_decode((string) file_get_contents(__DIR__ . '/../composer.json'), true, 512, JSON_THROW_ON_ERROR);
+        self::assertIsArray($composer);
+        self::assertSame('<7.0', $composer['conflict']['guzzlehttp/guzzle'] ?? null);
+    }
 }
+

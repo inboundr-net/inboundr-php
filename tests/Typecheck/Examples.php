@@ -74,4 +74,11 @@ final class Examples
         $deliveryId = Webhook::readHeaders($headers)->deliveryId;
         return $deliveryId === null ? null : $event['email']['subject'];
     }
+
+    /** @param array<string, string> $headers */
+    public function dedupe(string $body, array $headers, string $secret): string
+    {
+        $delivery = Webhook::verifyDelivery($body, $headers, $secret);
+        return $delivery->deliveryId . ':' . $delivery->event['email']['id'];
+    }
 }

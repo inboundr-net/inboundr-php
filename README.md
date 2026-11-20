@@ -57,11 +57,19 @@ Headers can be `$_SERVER`, `getallheaders()`, a PSR-7 message, or a Symfony/Lara
 
 ### Retries
 
-Failed deliveries are retried with the same delivery id. Use it to skip deliveries you have already handled:
+Failed deliveries are retried with the same delivery id. To skip deliveries you have already handled, verify with `verifyDelivery`, which also checks the signature on the delivery id:
 
 ```php
-$deliveryId = Webhook::readHeaders($_SERVER)->deliveryId;
+$delivery = Webhook::verifyDelivery(file_get_contents('php://input'), $_SERVER, $webhookSecret);
+
+if (alreadyHandled($delivery->deliveryId)) {
+    http_response_code(204);
+    exit;
+}
+$email = $delivery->event['email'];
 ```
+
+Don't deduplicate on the `x-inboundr-delivery-id` header read directly: it isn't covered by the body's signature, so a replayed delivery could carry any id.
 
 ### Missing body
 

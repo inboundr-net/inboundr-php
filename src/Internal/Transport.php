@@ -33,7 +33,9 @@ final class Transport
         ?StreamFactoryInterface $streamFactory,
         float $timeout,
     ) {
-        $this->url = rtrim($baseUrl, '/') . '/api/v1';
+        // Accept the API address too (https://inboundr.net/api/v1), which the
+        // API reference shows; appending /api/v1 to it would 404 every call.
+        $this->url = preg_replace('#/api/v1/?$#', '', rtrim($baseUrl, '/')) . '/api/v1';
         $this->http = $httpClient ?? self::defaultClient($timeout);
         try {
             $this->requests = $requestFactory ?? Psr17FactoryDiscovery::findRequestFactory();
@@ -55,6 +57,8 @@ final class Transport
      */
     private static function defaultClient(float $timeout): ClientInterface
     {
+        // composer.json conflicts with Guzzle < 7, whose Client has the same
+        // name but isn't a PSR-18 client.
         if (class_exists(\GuzzleHttp\Client::class)) {
             return new \GuzzleHttp\Client([
                 'timeout' => $timeout,
@@ -94,7 +98,13 @@ final class Transport
             ->withHeader('Accept', 'application/json')
             ->withHeader('User-Agent', 'inboundr-php/' . Inboundr::VERSION);
         if ($body !== null) {
-            $json = json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            try {
+                // Request bodies are always JSON objects: an empty PHP array
+                // would otherwise encode as a list, `[]`.
+                $json = json_encode($body === [] ? new \stdClass() : $body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            } catch (\JsonException $e) {
+                throw new InboundrException("$method $path: the request body can't be encoded as JSON: " . $e->getMessage(), 0, $e);
+            }
             $request = $request
                 ->withHeader('Content-Type', 'application/json')
                 ->withBody($this->streams->createStream($json));
@@ -172,7 +182,9 @@ final class Transport
                 : "$status " . json_encode($body['error'], JSON_UNESCAPED_SLASHES);
         }
         if (is_string($body) && trim($body) !== '') {
-            return "$status $body";
+            // An HTML error page from a proxy can be tens of kilobytes.
+            $text = strlen($body) > 200 ? substr($body, 0, 200) . '…' : $body;
+            return "$status $text";
         }
         return "Request failed with status $status";
     }
@@ -199,6 +211,10 @@ final class Transport
             $cursor = $page['nextCursor'] ?? null;
             if (!is_string($cursor) || $cursor === '') {
                 return;
+            }
+            if ($cursor === ($query['cursor'] ?? null)) {
+                // The same page again would loop forever.
+                throw new InboundrException("GET $path returned the same cursor twice; stopping.");
             }
             $query['cursor'] = $cursor;
         }

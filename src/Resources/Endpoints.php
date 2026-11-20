@@ -42,7 +42,7 @@ final class Endpoints
     public function create(array $params): array
     {
         /** @var CreatedEndpoint */
-        return $this->transport->request('POST', '/endpoints', body: $params);
+        return $this->transport->request('POST', '/endpoints', body: self::withObjectHeaders($params));
     }
 
     /**
@@ -63,7 +63,7 @@ final class Endpoints
     public function update(string $id, array $params): array
     {
         /** @var Endpoint */
-        return $this->transport->request('PATCH', '/endpoints/' . Transport::segment($id), body: $params);
+        return $this->transport->request('PATCH', '/endpoints/' . Transport::segment($id), body: self::withObjectHeaders($params));
     }
 
     public function delete(string $id): void
@@ -104,5 +104,21 @@ final class Endpoints
     {
         /** @var \Generator<int, Delivery, mixed, void> */
         return $this->transport->paginate('/endpoints/' . Transport::segment($id) . '/deliveries', $query);
+    }
+
+    /**
+     * `headers` is a name-to-value map, so an empty one must reach the API as
+     * `{}`; PHP's `[]` would encode as a list and be rejected. Sending
+     * `['headers' => []]` clears the endpoint's custom headers.
+     *
+     * @param array<string, mixed> $params
+     * @return array<string, mixed>
+     */
+    private static function withObjectHeaders(array $params): array
+    {
+        if (array_key_exists('headers', $params) && $params['headers'] === []) {
+            $params['headers'] = new \stdClass();
+        }
+        return $params;
     }
 }
